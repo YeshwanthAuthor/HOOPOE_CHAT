@@ -222,6 +222,26 @@ def apply_sidebar_style():
     )
 
 
+def show_footer_note():
+    st.markdown(
+        """
+        <style>
+            [data-testid="stBottom"]::after {
+                content: "Made hand-in-hand by a human and an LLM. One had coffee.";
+                display: block;
+                width: 100%;
+                margin: 0.35rem 0 0.15rem 0;
+                color: rgba(128, 128, 128, 0.85);
+                font-size: 0.82rem;
+                line-height: 1.25;
+                text-align: center;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 config = read_config()
 prepare_app_state(config)
 
@@ -290,6 +310,8 @@ with st.sidebar:
 
 
 show_chat_messages(active_chat_id)
+
+show_footer_note()
 
 user_message = st.chat_input(
     "Waiting for Hoopoe..." if st.session_state.waiting_for_response else "Ask your question",
