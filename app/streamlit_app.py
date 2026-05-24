@@ -21,6 +21,8 @@ CONFIG_FILE = PROJECT_DIR / "config" / "config.json"
 UPLOAD_FOLDER = PROJECT_DIR / "data" / "uploads"
 VECTORSTORE_FOLDER = PROJECT_DIR / "vectorstores"
 GREETING = "Hi, I am Hoopoe. How can I help you today?"
+MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024
+MAX_UPLOAD_SIZE_LABEL = "2 MB"
 
 
 st.set_page_config(page_title=PAGE_TITLE, page_icon=str(PAGE_ICON), layout="wide")
@@ -284,12 +286,21 @@ with st.sidebar:
     )
 
     uploaded_file = st.file_uploader(
-        "Upload PDF/DOCX/TXT",
+        f"Upload PDF/DOCX/TXT (max {MAX_UPLOAD_SIZE_LABEL})",
         type=["pdf", "docx", "txt"],
         accept_multiple_files=False,
     )
 
-    if uploaded_file and st.button("Index Document", type="primary", use_container_width=True):
+    upload_too_large = bool(uploaded_file and uploaded_file.size > MAX_UPLOAD_SIZE_BYTES)
+    if upload_too_large:
+        st.error(f"{uploaded_file.name} is too large. Maximum upload size is {MAX_UPLOAD_SIZE_LABEL}.")
+
+    if uploaded_file and st.button(
+        "Index Document",
+        type="primary",
+        use_container_width=True,
+        disabled=upload_too_large,
+    ):
         with st.spinner("Indexing document..."):
             try:
                 file_info, new_chunks = index_document(uploaded_file, active_chat_id, runtime_config)
