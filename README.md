@@ -119,6 +119,25 @@ Streamlit will print a local URL, usually:
 http://localhost:8501
 ```
 
+## Deploy on Render
+
+This project includes `.python-version` with Python `3.11` for Render. Render's current default Python can be newer than some ML/LangChain packages support, so keep this file in the repository.
+
+Use this Render start command:
+
+```bash
+streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT
+```
+
+Set these environment variables in Render:
+
+```text
+OPENAI_API_KEY
+GEMINI_API_KEY
+```
+
+The app uses local FAISS indexes. On Render's free/ephemeral filesystem, uploaded files and vector indexes can disappear after restarts unless you attach persistent storage.
+
 ## Usage
 
 1. Open the Streamlit app in your browser.
