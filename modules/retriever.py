@@ -17,7 +17,11 @@ def get_retriever(vectorstore, config):
         elif llm_provider == "openai":
             llm = ChatOpenAI(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini", temperature=0)
         elif llm_provider in ("gemini", "google"):
-            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                google_api_key=os.getenv("GEMINI_API_KEY"),
+                temperature=0,
+            )
         else:
             raise ValueError(f"Provider {llm_provider} is not valid.")
         return MultiQueryRetriever.from_llm(vectorstore.as_retriever(search_kwargs={"k": top_k}), llm)

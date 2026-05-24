@@ -2,6 +2,7 @@ import copy
 import base64
 import hashlib
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -166,6 +167,7 @@ def get_bot_reply(user_message, chat_id, config):
 
     response = chain.invoke({"question": user_message, "session_id": chat_id})
     bot_reply = getattr(response, "content", str(response))
+    bot_reply = format_sources_on_separate_line(bot_reply)
 
     if config.get("memory", {}).get("enabled", True):
         update_recent_memory(
@@ -176,6 +178,16 @@ def get_bot_reply(user_message, chat_id, config):
         )
 
     return bot_reply
+
+
+def format_sources_on_separate_line(text):
+    source_match = re.search(r"\s*\(?Sources:\s*([^)]+)\)?\s*$", text, flags=re.IGNORECASE)
+    if not source_match:
+        return text
+
+    answer = text[:source_match.start()].rstrip()
+    sources = source_match.group(1).strip()
+    return f"{answer}\n\nSources: {sources}"
 
 
 def show_chat_messages(chat_id):

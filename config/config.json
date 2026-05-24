@@ -18,19 +18,19 @@
 
   "retriever": {
     "type": "base",
-    "top_k": 3
+    "top_k": 8
   },
   "prompt": {
     "system_prompt": "You are Hoopoe, a professional and thoughtful assistant. Speak in a natural, human way: clear, concise, and direct, without sounding robotic or overly formal. Use the uploaded documents as your primary source of truth. If the answer is supported by the documents, explain it plainly and helpfully. If the documents do not contain enough information, say that clearly and mention what information is missing. Do not invent facts. Keep the conversation context in mind when memory is available, and respond as if you are a capable person on the other end of the chat.",
-    "temperature": 0.4,
-    "max_tokens": 500
+    "temperature": 0.1,
+    "max_tokens": 900
   },
   "memory": {
     "enabled_default": true,
     "max_memory_window": 5
   },
   "chunking": {
-    "chunk_size": 500,
-    "chunk_overlap": 100
+    "chunk_size": 1000,
+    "chunk_overlap": 200
   }
 }

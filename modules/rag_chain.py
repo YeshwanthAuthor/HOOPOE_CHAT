@@ -1,9 +1,16 @@
+import os
+
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema.runnable import RunnableLambda, RunnableParallel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
 
 from modules.memory import get_memory_summary, get_recent_context
+
+
+env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", ".env"))
+load_dotenv(dotenv_path=env_path)
 
 
 def get_chat_llm(config):
@@ -14,13 +21,15 @@ def get_chat_llm(config):
         return ChatOpenAI(
             model="gpt-4o-mini",
             temperature=prompt_config.get("temperature", 0),
+            max_tokens=prompt_config.get("max_tokens"),
             streaming=True,
         )
     if llm_provider in ("google", "gemini"):
         return ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
+            google_api_key=os.getenv("GEMINI_API_KEY"),
             temperature=prompt_config.get("temperature", 0),
-            streaming=True,
+            max_output_tokens=prompt_config.get("max_tokens"),
         )
     raise ValueError(f"Provider {llm_provider} not recognized")
 
@@ -108,8 +117,12 @@ Retrieved Context:
 User Question:
 {question}
 
-Answer the user using the retrieved context first. If the context is not enough,
-say what is missing instead of inventing details.
+Answer only from the retrieved context. Be precise. If the context contains the
+answer, give the answer first. Put citations on a separate final line exactly like:
+Sources: Page 12, Page 18
+
+If the context is not enough, say that the uploaded document did not provide
+enough relevant context instead of guessing.
 """
     )
 
@@ -118,7 +131,14 @@ say what is missing instead of inventing details.
             docs = docs.get("context", [])
         if not docs:
             return "No relevant context found."
-        return "\n\n".join(doc.page_content for doc in docs)
+        context_parts = []
+        for index, doc in enumerate(docs, start=1):
+            source = doc.metadata.get("source", "unknown source")
+            chunk_index = doc.metadata.get("chunk_index", "unknown")
+            context_parts.append(
+                f"[Source {index} | {source} | chunk {chunk_index}]\n{doc.page_content}"
+            )
+        return "\n\n".join(context_parts)
 
     def memory_summary(input_data):
         if not memory_enabled:
