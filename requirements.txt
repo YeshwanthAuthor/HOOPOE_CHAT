@@ -1,0 +1,44 @@
+# --- Core LangChain Packages ---
+langchain==0.3.25
+langchain-community==0.3.24
+langchain-core==0.3.65
+langchain-text-splitters==0.3.8
+langchain-openai==0.3.18
+langchain-google-genai>=2.1.5
+langchain-pinecone==0.2.13
+
+# --- Google GenAI SDK ---
+google-genai>=0.3.0
+
+# --- Embeddings ---
+sentence-transformers==3.1.1
+faiss-cpu==1.8.0.post1
+
+# --- Pinecone (version managed by langchain-pinecone) ---
+# pinecone intentionally unpinned
+
+# --- Document Loaders ---
+unstructured==0.15.14
+pypdf==5.1.0
+python-docx==1.1.2
+beautifulsoup4==4.12.3
+requests==2.32.3
+
+# --- Environment & Config ---
+python-dotenv==1.0.1
+
+# --- Frontend (UI) ---
+streamlit==1.39.0
+gradio==5.9.1
+
+# --- Utilities ---
+tiktoken==0.7.0
+numpy==1.26.4
+pandas==2.2.3
+langsmith==0.3.45
+
+# --- Optional Tools ---
+matplotlib==3.9.2
+
+# --- Jupyter ---
+ipywidgets>=8.1.0
