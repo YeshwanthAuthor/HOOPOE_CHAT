@@ -3,6 +3,7 @@ import contextlib
 import copy
 import hashlib
 import sys
+import textwrap
 import uuid
 from pathlib import Path
 
@@ -27,7 +28,7 @@ GREETING = "Hi, I am Hoopoe. How can I help you today?"
 # LLM Provider dropdown. Swap in real logo image files here if you have
 # ones you're licensed to use.
 PROVIDER_LABELS = {"openai": "Ⓞ  OpenAI", "gemini": "Ⓖ  Gemini"}
-INDEXED_FILES_BOX_HEIGHT = 160  # px - scrolls internally once the list outgrows this
+SIDEBAR_LIST_BOX_HEIGHT = 160  # px - the two sidebar file lists below scroll internally once they outgrow this
 
 
 st.set_page_config(page_title=PAGE_TITLE, page_icon=str(PAGE_ICON), layout="wide")
@@ -261,8 +262,13 @@ def add_message(chat_id, role, content, citations=None):
 
 
 def show_app_title():
-    st.markdown(
-        f"""
+    # textwrap.dedent() strips the leading indentation that this string would
+    # otherwise carry from matching the surrounding Python code's nesting -
+    # left in place, that indentation can make Streamlit's markdown renderer
+    # treat the <div> as an indented code block (shown as literal text)
+    # instead of an HTML block (rendered normally). See hoopoe_spinner() below,
+    # which hit exactly that bug.
+    title_html = textwrap.dedent(f"""\
         <div style="display:flex; align-items:center; gap:14px; margin: 0 0 1.5rem 0;">
             <img src="data:image/png;base64,{APP_ICON_B64}" width="76" height="76"
                  style="object-fit:contain; display:block;" />
@@ -270,9 +276,8 @@ def show_app_title():
                 Hoopoe
             </h1>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """)
+    st.markdown(title_html, unsafe_allow_html=True)
 
 
 HOOPOE_SPINNER_CSS = """
@@ -320,24 +325,35 @@ def hoopoe_spinner(text: str):
     message, for the two slow actions in this app (indexing documents,
     generating a chat response). Usage is identical to st.spinner:
     `with hoopoe_spinner("Thinking..."):`.
+
+    HOOPOE_SPINNER_CSS is injected once, globally, near the top of the script
+    (see show_hoopoe_spinner_css() and where it's called below) - this
+    function only ever renders the small <div> that CSS styles. Earlier, this
+    function concatenated the CSS and the <div> into one markdown() call;
+    that put a <style> block and an indented <div> block in the same string,
+    and the <div> rendered as literal visible text instead of HTML. Keeping
+    this call to a single, dedented HTML block avoids that.
     """
     placeholder = st.empty()
-    placeholder.markdown(
-        HOOPOE_SPINNER_CSS
-        + f"""
+    spinner_html = textwrap.dedent(f"""\
         <div class="hoopoe-spinner-wrap">
             <span class="hoopoe-spinner-outer">
                 <img class="hoopoe-spinner-bird" src="data:image/png;base64,{APP_ICON_B64}" />
             </span>
             <span class="hoopoe-spinner-text">{text}</span>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """)
+    placeholder.markdown(spinner_html, unsafe_allow_html=True)
     try:
         yield
     finally:
         placeholder.empty()
+
+
+def show_hoopoe_spinner_css():
+    """Injects HOOPOE_SPINNER_CSS once, up front, so it's already present on
+    the page by the time any hoopoe_spinner() call needs it."""
+    st.markdown(HOOPOE_SPINNER_CSS, unsafe_allow_html=True)
 
 
 def apply_sidebar_style():
@@ -478,6 +494,7 @@ runtime_config = current_config(config)
 
 hide_theme_switcher()
 apply_sidebar_style()
+show_hoopoe_spinner_css()
 show_app_title()
 
 with st.sidebar:
@@ -530,6 +547,19 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
+    if uploaded_files:
+        # Streamlit's own file-picker preview only shows a few files at a
+        # time and pages through the rest with arrows instead of scrolling -
+        # there's no supported way to turn that native preview into a
+        # scroller. This is a second, scrollable summary of the same
+        # selection instead, so every attached file is visible (scrolling
+        # once the list outgrows the box) the moment it's attached, not just
+        # after Index Documents is clicked.
+        st.caption("Files attached")
+        with st.container(height=SIDEBAR_LIST_BOX_HEIGHT):
+            for uploaded_file in uploaded_files:
+                st.write(f"- {uploaded_file.name}")
+
     too_large_files = [f for f in uploaded_files if f.size > max_upload_size_bytes]
     if too_large_files:
         too_large_names = ", ".join(f.name for f in too_large_files)
@@ -567,12 +597,11 @@ with st.sidebar:
 
     indexed_files = st.session_state.documents[active_chat_id]["indexed_files"].values()
     if indexed_files:
-        # A fixed-height, scrollable box - the only scroller anywhere in the
-        # sidebar, and only present once there's something to scroll. It
-        # just shows everything with no scrollbar until the list of indexed
-        # files grows past INDEXED_FILES_BOX_HEIGHT.
+        # A fixed-height, scrollable box - present only once there's
+        # something to scroll. It just shows everything with no scrollbar
+        # until the list of indexed files grows past SIDEBAR_LIST_BOX_HEIGHT.
         st.caption("Indexed files")
-        with st.container(height=INDEXED_FILES_BOX_HEIGHT):
+        with st.container(height=SIDEBAR_LIST_BOX_HEIGHT):
             for file_info in indexed_files:
                 st.write(f"- {file_info['name']} ({file_info['chunks']} chunks)")
     else:
