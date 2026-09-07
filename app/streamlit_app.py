@@ -352,6 +352,29 @@ def apply_sidebar_style():
     )
 
 
+def hide_theme_switcher():
+    """The app is forced into dark mode via .streamlit/config.toml
+    ([theme] base="dark"). That alone only sets the default - Streamlit's
+    built-in "Settings" menu (the hamburger icon, top-right) still lets a
+    user manually switch to Light. Hiding that menu is the only way to
+    remove the option entirely, since Streamlit has no config flag to
+    disable just the theme picker inside it. #MainMenu is Streamlit's
+    long-standing id for this menu; the data-testid selector covers newer
+    versions that render it differently. This does not touch the sidebar's
+    own collapse arrow, which is a separate element.
+    """
+    st.markdown(
+        """
+        <style>
+            #MainMenu, [data-testid="stMainMenu"] {
+                visibility: hidden;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def show_footer_note():
     st.markdown(
         """
@@ -378,6 +401,7 @@ prepare_app_state(config)
 active_chat_id = current_chat_id()
 runtime_config = current_config(config)
 
+hide_theme_switcher()
 apply_sidebar_style()
 show_app_title()
 

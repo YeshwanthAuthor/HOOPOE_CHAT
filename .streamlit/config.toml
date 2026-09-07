@@ -3,3 +3,17 @@ headless = true
 enableCORS = false
 port = 8080
 maxUploadSize = 2
+
+[theme]
+# Force dark mode as the only theme - base="dark" makes Streamlit fill in
+# its dark palette by default; the individual colors below just make that
+# explicit so it doesn't silently change if Streamlit's own defaults ever
+# change. The "Settings" menu's theme switcher is also hidden in
+# app/streamlit_app.py (see hide_theme_switcher()) so users have no way to
+# flip back to light mode from the UI.
+base = "dark"
+primaryColor = "#FF4B4B"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
