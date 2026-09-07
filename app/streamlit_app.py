@@ -21,6 +21,14 @@ APP_ICON_B64 = base64.b64encode(APP_ICON.read_bytes()).decode("utf-8")
 UPLOAD_FOLDER = PROJECT_DIR / "data" / "uploads"
 GREETING = "Hi, I am Hoopoe. How can I help you today?"
 
+# Circled-letter glyphs, not the real OpenAI/Gemini logos - Claude avoids
+# reproducing companies' actual trademarked artwork, so this is a simple,
+# original stand-in that still gives each option a distinct icon in the
+# LLM Provider dropdown. Swap in real logo image files here if you have
+# ones you're licensed to use.
+PROVIDER_LABELS = {"openai": "Ⓞ  OpenAI", "gemini": "Ⓖ  Gemini"}
+INDEXED_FILES_BOX_HEIGHT = 160  # px - scrolls internally once the list outgrows this
+
 
 st.set_page_config(page_title=PAGE_TITLE, page_icon=str(PAGE_ICON), layout="wide")
 
@@ -334,10 +342,16 @@ def hoopoe_spinner(text: str):
 
 def apply_sidebar_style():
     """Sidebar look-and-feel, in three parts:
-      1. Static, no internal scrollbar - the sidebar grows to fit its
-         content (New Chat, chat picker, Clear Conversation, provider,
-         memory toggle, document uploader, indexed-files list) instead of
-         being pinned to the viewport height with its own scroller.
+      1. Static, no sidebar-wide scrollbar, content pulled up to the top -
+         the sidebar grows to fit its content (New Chat, chat picker, Clear
+         Conversation, provider, memory toggle, document uploader) instead
+         of being pinned to the viewport height with its own scroller, and
+         the near-zero top padding starts that content right at the top
+         instead of leaving a gap under the collapse-toggle header. The one
+         exception is the indexed-files list, which gets its own small
+         fixed-height scrollable box (via st.container(height=...) where
+         it's rendered below) - that's the only scroller in the sidebar,
+         and it only appears once files are actually indexed.
       2. A consistent, compact vertical rhythm between every widget so the
          sidebar reads as one neatly stacked column instead of default
          Streamlit spacing (which varies widget to widget).
@@ -364,7 +378,7 @@ def apply_sidebar_style():
             [data-testid="stSidebarUserContent"] {
                 height: auto !important;
                 overflow: visible !important;
-                padding-top: 1.25rem;
+                padding-top: 0.25rem;
             }
 
             /* --- 2. Neat, consistent stacking of every sidebar widget ----- */
@@ -495,6 +509,7 @@ with st.sidebar:
         "LLM Provider",
         options=["openai", "gemini"],
         index=["openai", "gemini"].index(st.session_state.llm_provider),
+        format_func=lambda value: PROVIDER_LABELS[value],
     )
     st.session_state.memory_enabled = st.toggle("Enable Memory", value=st.session_state.memory_enabled)
     runtime_config = current_config(config)
@@ -552,9 +567,14 @@ with st.sidebar:
 
     indexed_files = st.session_state.documents[active_chat_id]["indexed_files"].values()
     if indexed_files:
+        # A fixed-height, scrollable box - the only scroller anywhere in the
+        # sidebar, and only present once there's something to scroll. It
+        # just shows everything with no scrollbar until the list of indexed
+        # files grows past INDEXED_FILES_BOX_HEIGHT.
         st.caption("Indexed files")
-        for file_info in indexed_files:
-            st.write(f"- {file_info['name']} ({file_info['chunks']} chunks)")
+        with st.container(height=INDEXED_FILES_BOX_HEIGHT):
+            for file_info in indexed_files:
+                st.write(f"- {file_info['name']} ({file_info['chunks']} chunks)")
     else:
         st.caption("No document indexed for this chat.")
 
