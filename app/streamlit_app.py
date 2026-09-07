@@ -130,18 +130,12 @@ def get_file_hash(uploaded_file):
 
 
 def index_document(uploaded_file, chat_id, config):
-    """Load, chunk, and index one uploaded file, then rebuild this chat's
-    full retrieval pipeline (FAISS + BM25 + reranker) from EVERY chunk
-    indexed so far in this chat - not just the new file's chunks.
-
-    This calls modules.embedder.create_retriever directly instead of the
-    self-healing get_retriever from Module 3: get_retriever only builds a
-    new FAISS index when none exists yet on disk, and simply loads the old
-    one otherwise - so if a second, different file were uploaded to the
-    same chat, its chunks would silently never make it into the index.
-    Always rebuilding from the chat's full accumulated chunk list keeps
-    every uploaded file searchable, at the cost of re-embedding earlier
-    files again on each new upload (fine at this app's document sizes/count).
+    """Load, chunk, and save one uploaded file into this chat's accumulated
+    chunk list. Does NOT build the retrieval pipeline itself - when
+    uploading several files at once, call this once per file first, then
+    call rebuild_pipeline() a single time for the whole batch. That way the
+    FAISS index, BM25 index, and cross-encoder model are each built once per
+    upload batch instead of once per file.
     """
     chat_documents = st.session_state.documents[chat_id]
     file_hash = get_file_hash(uploaded_file)
@@ -163,6 +157,32 @@ def index_document(uploaded_file, chat_id, config):
         raise ValueError("No readable text was found in the uploaded document.")
 
     chat_documents["chunks"].extend(new_chunks)
+
+    file_info = {
+        "name": uploaded_file.name,
+        "chunks": len(new_chunks),
+    }
+    chat_documents["indexed_files"][file_hash] = file_info
+    return file_info, len(new_chunks)
+
+
+def rebuild_pipeline(chat_id, config):
+    """Rebuild this chat's full retrieval pipeline (FAISS + BM25 + hybrid +
+    reranker) from EVERY chunk indexed so far in this chat - not just the
+    most recently uploaded file's chunks. Call this once after indexing a
+    batch of one or more files with index_document().
+
+    This calls modules.embedder.create_retriever directly instead of the
+    self-healing get_retriever from Module 3: get_retriever only builds a
+    new FAISS index when none exists yet on disk, and simply loads the old
+    one otherwise - so if a second, different file were uploaded to the
+    same chat, its chunks would silently never make it into the index.
+    Always rebuilding from the chat's full accumulated chunk list keeps
+    every uploaded file searchable, at the cost of re-embedding earlier
+    files again on each new upload batch (fine at this app's document
+    sizes/count).
+    """
+    chat_documents = st.session_state.documents[chat_id]
     provider = config["embedding"]["provider"]
 
     faiss_retriever = create_retriever(chat_documents["chunks"], chat_id, provider, config)
@@ -171,13 +191,6 @@ def index_document(uploaded_file, chat_id, config):
 
     reranker = CrossEncoderReranker(config) if config["reranking"]["enabled"] else None
     chat_documents["pipeline"] = RetrievalPipeline(hybrid_retriever, reranker, config)
-
-    file_info = {
-        "name": uploaded_file.name,
-        "chunks": len(new_chunks),
-    }
-    chat_documents["indexed_files"][file_hash] = file_info
-    return file_info, len(new_chunks)
 
 
 def get_bot_reply(user_message, chat_id, config):
@@ -328,40 +341,64 @@ with st.sidebar:
 
     st.divider()
     st.subheader(
-        "Document",
-        help="Upload a file and click Index Document to ask questions about the file.",
+        "Documents",
+        help="Upload one or more files and click Index Documents to ask questions about them.",
     )
 
     allowed_extensions = [ext.lstrip(".") for ext in config["upload"]["allowed_extensions"]]
     max_upload_size_mb = config["upload"]["max_size_mb"]
     max_upload_size_bytes = max_upload_size_mb * 1024 * 1024
 
-    uploaded_file = st.file_uploader(
-        f"Upload {'/'.join(ext.upper() for ext in allowed_extensions)} (max {max_upload_size_mb} MB)",
+    uploaded_files = st.file_uploader(
+        f"Upload {'/'.join(ext.upper() for ext in allowed_extensions)} (max {max_upload_size_mb} MB each)",
         type=allowed_extensions,
-        accept_multiple_files=False,
+        accept_multiple_files=True,
     )
 
-    upload_too_large = bool(uploaded_file and uploaded_file.size > max_upload_size_bytes)
-    if upload_too_large:
-        st.error(f"{uploaded_file.name} is too large. Maximum upload size is {max_upload_size_mb} MB.")
+    too_large_files = [f for f in uploaded_files if f.size > max_upload_size_bytes]
+    if too_large_files:
+        too_large_names = ", ".join(f.name for f in too_large_files)
+        st.error(f"Too large (max {max_upload_size_mb} MB each): {too_large_names}")
 
-    if uploaded_file and st.button(
-        "Index Document",
+    if uploaded_files and st.button(
+        "Index Documents",
         type="primary",
         use_container_width=True,
-        disabled=upload_too_large,
+        disabled=bool(too_large_files),
     ):
-        with st.spinner("Indexing document..."):
-            try:
-                file_info, new_chunks = index_document(uploaded_file, active_chat_id, runtime_config)
-                if new_chunks:
-                    st.success(f"Indexed {file_info['name']} into {new_chunks} chunks.")
-                else:
-                    st.info(f"{file_info['name']} is already indexed.")
-            except Exception as error:
-                logger.error("Failed to index %s for chat %s: %s", uploaded_file.name, active_chat_id, error)
-                st.error(str(error))
+        newly_indexed = []
+        already_indexed = []
+        failed = []
+        with st.spinner(f"Indexing {len(uploaded_files)} document(s)..."):
+            for uploaded_file in uploaded_files:
+                try:
+                    file_info, new_chunks = index_document(uploaded_file, active_chat_id, runtime_config)
+                    if new_chunks:
+                        newly_indexed.append(file_info)
+                    else:
+                        already_indexed.append(file_info)
+                except Exception as error:
+                    logger.error("Failed to index %s for chat %s: %s", uploaded_file.name, active_chat_id, error)
+                    failed.append((uploaded_file.name, str(error)))
+
+            pipeline_error = None
+            if newly_indexed:
+                try:
+                    rebuild_pipeline(active_chat_id, runtime_config)
+                except Exception as error:
+                    logger.error("Failed to rebuild retrieval pipeline for chat %s: %s", active_chat_id, error)
+                    pipeline_error = str(error)
+
+        if newly_indexed:
+            names = ", ".join(f"{info['name']} ({info['chunks']} chunks)" for info in newly_indexed)
+            st.success(f"Indexed: {names}")
+        if pipeline_error:
+            st.error(f"Indexed the file content but failed to build the search index: {pipeline_error}")
+        if already_indexed:
+            names = ", ".join(info["name"] for info in already_indexed)
+            st.info(f"Already indexed: {names}")
+        for filename, error_message in failed:
+            st.error(f"{filename}: {error_message}")
 
     indexed_files = st.session_state.documents[active_chat_id]["indexed_files"].values()
     if indexed_files:
