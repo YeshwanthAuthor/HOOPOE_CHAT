@@ -1,8 +1,6 @@
-import copy
 import base64
+import copy
 import hashlib
-import json
-import re
 import sys
 import uuid
 from pathlib import Path
@@ -18,28 +16,28 @@ if str(PROJECT_DIR) not in sys.path:
 PAGE_TITLE = "Hoopoe | RAG Chat"
 APP_ICON = PROJECT_DIR / "app" / "assets" / "Hoopoe_display.png"
 PAGE_ICON = PROJECT_DIR / "app" / "assets" / "Hoopoe_favicon.png"
-CONFIG_FILE = PROJECT_DIR / "config" / "config.json"
 UPLOAD_FOLDER = PROJECT_DIR / "data" / "uploads"
-VECTORSTORE_FOLDER = PROJECT_DIR / "vectorstores"
 GREETING = "Hi, I am Hoopoe. How can I help you today?"
-MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024
-MAX_UPLOAD_SIZE_LABEL = "2 MB"
 
 
 st.set_page_config(page_title=PAGE_TITLE, page_icon=str(PAGE_ICON), layout="wide")
 
-from modules.embedder import build_or_update_vectorstore
+from modules.bm25_retriever import build_bm25_retriever
+from modules.embedder import create_retriever
 from modules.loader import load_document
-from modules.memory import update_recent_memory
-from modules.rag_chain import build_chat_chain, build_rag_chain
-from modules.retriever import get_retriever
+from modules.memory import clear_session_memory, record_turn
+from modules.rag_chain import RetrievalPipeline, build_chat_chain, build_rag_chain
+from modules.reranker import CrossEncoderReranker
+from modules.retriever import get_hybrid_retriever
 from modules.splitter import split_doc
+from modules.utils import get_logger, load_config
+
+logger = get_logger(__name__)
 
 
 @st.cache_data
 def read_config():
-    with open(CONFIG_FILE, "r", encoding="utf-8") as file:
-        return json.load(file)
+    return load_config()
 
 
 def start_new_chat():
@@ -50,7 +48,8 @@ def start_new_chat():
     st.session_state.messages[chat_id] = [{"role": "assistant", "content": GREETING}]
     st.session_state.documents[chat_id] = {
         "indexed_files": {},
-        "retriever": None,
+        "chunks": [],
+        "pipeline": None,
     }
     st.session_state.active_chat_id = chat_id
 
@@ -80,10 +79,10 @@ def prepare_app_state(config):
         st.session_state.active_chat_id = None
 
     if "llm_provider" not in st.session_state:
-        st.session_state.llm_provider = config.get("llm_provider", "openai")
+        st.session_state.llm_provider = config["llm"]["provider"]
 
     if "memory_enabled" not in st.session_state:
-        st.session_state.memory_enabled = config.get("memory", {}).get("enabled_default", True)
+        st.session_state.memory_enabled = config["memory"]["enabled_default"]
 
     if "waiting_for_response" not in st.session_state:
         st.session_state.waiting_for_response = False
@@ -105,10 +104,15 @@ def current_chat_id():
 
 
 def current_config(config):
+    """A per-request copy of the base config with the sidebar's live toggles
+    (LLM provider, memory on/off) applied on top. The embedding provider is
+    deliberately NOT overridden here - it stays whatever config.yaml says,
+    since switching it mid-chat would point at a FAISS index built with a
+    different embedding model.
+    """
     updated_config = copy.deepcopy(config)
-    updated_config["llm_provider"] = st.session_state.llm_provider
-    updated_config.setdefault("memory", {})
-    updated_config["memory"]["enabled"] = st.session_state.memory_enabled
+    updated_config["llm"]["provider"] = st.session_state.llm_provider
+    updated_config["memory"]["enabled_default"] = st.session_state.memory_enabled
     return updated_config
 
 
@@ -126,6 +130,19 @@ def get_file_hash(uploaded_file):
 
 
 def index_document(uploaded_file, chat_id, config):
+    """Load, chunk, and index one uploaded file, then rebuild this chat's
+    full retrieval pipeline (FAISS + BM25 + reranker) from EVERY chunk
+    indexed so far in this chat - not just the new file's chunks.
+
+    This calls modules.embedder.create_retriever directly instead of the
+    self-healing get_retriever from Module 3: get_retriever only builds a
+    new FAISS index when none exists yet on disk, and simply loads the old
+    one otherwise - so if a second, different file were uploaded to the
+    same chat, its chunks would silently never make it into the index.
+    Always rebuilding from the chat's full accumulated chunk list keeps
+    every uploaded file searchable, at the cost of re-embedding earlier
+    files again on each new upload (fine at this app's document sizes/count).
+    """
     chat_documents = st.session_state.documents[chat_id]
     file_hash = get_file_hash(uploaded_file)
 
@@ -135,69 +152,80 @@ def index_document(uploaded_file, chat_id, config):
     saved_file = save_file(uploaded_file, chat_id)
     loaded_docs = load_document(str(saved_file))
 
-    chunk_settings = config.get("chunking", {})
-    chunks = split_doc(
+    chunk_settings = config["chunking"]
+    new_chunks = split_doc(
         loaded_docs,
-        chunk_size=chunk_settings.get("chunk_size", 500),
-        chunk_overlap=chunk_settings.get("chunk_overlap", 100),
+        chunk_size=chunk_settings["chunk_size"],
+        chunk_overlap=chunk_settings["chunk_overlap"],
     )
 
-    if not chunks:
+    if not new_chunks:
         raise ValueError("No readable text was found in the uploaded document.")
 
-    index_folder = VECTORSTORE_FOLDER / chat_id / config["embedding_provider"]
-    vectorstore = build_or_update_vectorstore(chunks, config, persist_dir=str(index_folder))
-    chat_documents["retriever"] = get_retriever(vectorstore, config)
+    chat_documents["chunks"].extend(new_chunks)
+    provider = config["embedding"]["provider"]
+
+    faiss_retriever = create_retriever(chat_documents["chunks"], chat_id, provider, config)
+    bm25_retriever = build_bm25_retriever(chat_documents["chunks"], config)
+    hybrid_retriever = get_hybrid_retriever(faiss_retriever, bm25_retriever, config)
+
+    reranker = CrossEncoderReranker(config) if config["reranking"]["enabled"] else None
+    chat_documents["pipeline"] = RetrievalPipeline(hybrid_retriever, reranker, config)
 
     file_info = {
         "name": uploaded_file.name,
-        "chunks": len(chunks),
+        "chunks": len(new_chunks),
     }
     chat_documents["indexed_files"][file_hash] = file_info
-    return file_info, len(chunks)
+    return file_info, len(new_chunks)
 
 
 def get_bot_reply(user_message, chat_id, config):
-    retriever = st.session_state.documents[chat_id]["retriever"]
+    pipeline = st.session_state.documents[chat_id]["pipeline"]
 
-    if retriever:
-        chain = build_rag_chain(retriever, config)
+    if pipeline:
+        retrieved = pipeline.invoke(user_message)
+        get_answer = build_rag_chain(retrieved, config)
     else:
-        chain = build_chat_chain(config)
+        get_answer = build_chat_chain(config)
 
-    response = chain.invoke({"question": user_message, "session_id": chat_id})
-    bot_reply = getattr(response, "content", str(response))
-    bot_reply = format_sources_on_separate_line(bot_reply)
+    result = get_answer(user_message, chat_id)
+    bot_reply = result["answer"]
+    citations = result["citations"]
 
-    if config.get("memory", {}).get("enabled", True):
-        update_recent_memory(
-            chat_id,
-            user_input=user_message,
-            ai_output=bot_reply,
-            n=config.get("memory", {}).get("max_memory_window", 5),
-        )
+    if config["memory"]["enabled_default"]:
+        record_turn(chat_id, user_message, bot_reply, config)
 
-    return bot_reply
+    return bot_reply, citations
 
 
-def format_sources_on_separate_line(text):
-    source_match = re.search(r"\s*\(?Sources:\s*([^)]+)\)?\s*$", text, flags=re.IGNORECASE)
-    if not source_match:
-        return text
-
-    answer = text[:source_match.start()].rstrip()
-    sources = source_match.group(1).strip()
-    return f"{answer}\n\nSources: {sources}"
+def format_citation_caption(citations):
+    """'Sources: leave_policy.docx, hr_handbook.docx' - deduplicated,
+    in bracket-number order."""
+    seen = set()
+    filenames = []
+    for citation in sorted(citations, key=lambda c: c["n"]):
+        filename = citation["filename"]
+        if filename not in seen:
+            seen.add(filename)
+            filenames.append(filename)
+    return "Sources: " + ", ".join(filenames)
 
 
 def show_chat_messages(chat_id):
     for message in st.session_state.messages[chat_id]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            citations = message.get("citations")
+            if citations:
+                st.caption(format_citation_caption(citations))
 
 
-def add_message(chat_id, role, content):
-    st.session_state.messages[chat_id].append({"role": role, "content": content})
+def add_message(chat_id, role, content, citations=None):
+    message = {"role": role, "content": content}
+    if citations:
+        message["citations"] = citations
+    st.session_state.messages[chat_id].append(message)
 
 
 def show_app_title():
@@ -268,10 +296,17 @@ show_app_title()
 with st.sidebar:
     st.markdown("### ⚙️ Chat Settings")
 
-    if st.button("New Chat", use_container_width=True):
-        st.session_state.latest_chat_number += 1
-        start_new_chat()
-        active_chat_id = current_chat_id()
+    new_chat_col, clear_chat_col = st.columns(2)
+    with new_chat_col:
+        if st.button("New Chat", use_container_width=True):
+            st.session_state.latest_chat_number += 1
+            start_new_chat()
+            active_chat_id = current_chat_id()
+    with clear_chat_col:
+        if st.button("Clear Conversation", use_container_width=True):
+            clear_session_memory(active_chat_id)
+            st.session_state.messages[active_chat_id] = [{"role": "assistant", "content": GREETING}]
+            st.rerun()
 
     chat_ids = list(st.session_state.chat_names.keys())
     selected_chat_id = st.selectbox(
@@ -297,15 +332,19 @@ with st.sidebar:
         help="Upload a file and click Index Document to ask questions about the file.",
     )
 
+    allowed_extensions = [ext.lstrip(".") for ext in config["upload"]["allowed_extensions"]]
+    max_upload_size_mb = config["upload"]["max_size_mb"]
+    max_upload_size_bytes = max_upload_size_mb * 1024 * 1024
+
     uploaded_file = st.file_uploader(
-        f"Upload PDF/DOCX/TXT (max {MAX_UPLOAD_SIZE_LABEL})",
-        type=["pdf", "docx", "txt"],
+        f"Upload {'/'.join(ext.upper() for ext in allowed_extensions)} (max {max_upload_size_mb} MB)",
+        type=allowed_extensions,
         accept_multiple_files=False,
     )
 
-    upload_too_large = bool(uploaded_file and uploaded_file.size > MAX_UPLOAD_SIZE_BYTES)
+    upload_too_large = bool(uploaded_file and uploaded_file.size > max_upload_size_bytes)
     if upload_too_large:
-        st.error(f"{uploaded_file.name} is too large. Maximum upload size is {MAX_UPLOAD_SIZE_LABEL}.")
+        st.error(f"{uploaded_file.name} is too large. Maximum upload size is {max_upload_size_mb} MB.")
 
     if uploaded_file and st.button(
         "Index Document",
@@ -321,6 +360,7 @@ with st.sidebar:
                 else:
                     st.info(f"{file_info['name']} is already indexed.")
             except Exception as error:
+                logger.error("Failed to index %s for chat %s: %s", uploaded_file.name, active_chat_id, error)
                 st.error(str(error))
 
     indexed_files = st.session_state.documents[active_chat_id]["indexed_files"].values()
@@ -350,17 +390,23 @@ if user_message and not st.session_state.waiting_for_response:
 if st.session_state.waiting_for_response and st.session_state.pending_user_message:
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
+            bot_reply = None
+            citations = []
             try:
-                bot_reply = get_bot_reply(
+                bot_reply, citations = get_bot_reply(
                     st.session_state.pending_user_message,
                     active_chat_id,
                     runtime_config,
                 )
+                st.markdown(bot_reply)
+                if citations:
+                    st.caption(format_citation_caption(citations))
             except Exception as error:
-                bot_reply = f"Error: {error}"
-            st.markdown(bot_reply)
+                logger.error("Failed to get a response for chat %s: %s", active_chat_id, error)
+                st.error(str(error))
+                bot_reply = "Sorry, something went wrong while generating a response. Please try again."
 
-    add_message(active_chat_id, "assistant", bot_reply)
+    add_message(active_chat_id, "assistant", bot_reply, citations)
     st.session_state.pending_user_message = None
     st.session_state.waiting_for_response = False
     st.rerun()

@@ -1,196 +1,220 @@
-# Hoopoe RAG Chatbot
+# Hoopoe — Enterprise Knowledge Assistant
 
-Hoopoe is a document-aware chatbot built with Streamlit, LangChain, FAISS, and OpenAI/Gemini models. It lets you upload a PDF, DOCX, or TXT file, index the document into a local vector store, and ask questions grounded in the uploaded content.
+## Problem Statement
 
-## Features
+Employees need quick, trustworthy answers to questions about internal documents — HR policies, IT guidelines, benefits, travel rules — without digging through PDFs and Word files themselves. A plain chatbot can't be trusted for this: it either doesn't know the company's specific policies, or worse, guesses confidently and gets details wrong. What's needed is an assistant that answers *only* from the actual documents, always shows exactly which document (and which passage) it drew from, and says so plainly when the documents don't have the answer.
 
-- Streamlit chat interface with multiple chat sessions
-- PDF, DOCX, and TXT document upload
-- Local FAISS vector store per chat session
-- OpenAI and Gemini chat model support
-- OpenAI and Gemini embedding support
-- Configurable retriever, chunking, prompt, and memory settings
-- Short-term conversation memory with optional summary memory
+## Solution Overview
+
+Hoopoe is a Retrieval-Augmented Generation (RAG) chatbot, built with Python, LangChain, and Streamlit, that answers questions grounded in uploaded documents. A user uploads a PDF, DOCX, or TXT file; Hoopoe chunks it, embeds it, and indexes it into a local FAISS vector store scoped to that chat session. Every question then runs through a hybrid retrieval pipeline (vector similarity search combined with BM25 keyword search) followed by cross-encoder reranking, so the LLM only ever sees the handful of chunks most relevant to the question. The LLM's answer carries numbered `[1]…[n]` citations built directly from that same chunk list — never parsed out of the LLM's text — so the sources shown to the user are always exactly the passages the answer was built from. If nothing relevant enough was retrieved, Hoopoe says so instead of guessing. Conversations carry both short-term memory (the last few turns) and a running summary, and both OpenAI and Gemini are supported as interchangeable chat/embedding providers throughout.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Uploaded Document<br/>PDF / DOCX / TXT] --> B[Loader<br/>modules/loader.py]
+    B --> C[Chunking<br/>modules/splitter.py]
+    C --> D[Embeddings<br/>OpenAI / Gemini]
+    D --> E[(FAISS Vector Store<br/>per chat, per provider)]
+
+    Q[User Question] --> F[Vector Search]
+    Q --> G[BM25 Keyword Search<br/>modules/bm25_retriever.py]
+    E --> F
+    C --> G
+
+    F --> H[Hybrid Retrieval<br/>EnsembleRetriever]
+    G --> H
+    H --> I[Cross-Encoder Reranking<br/>modules/reranker.py]
+    I --> J[LLM + Memory<br/>modules/rag_chain.py]
+    K[(Conversation Memory<br/>recent turns + summary)] --> J
+    J --> L[Grounded Answer<br/>+ Numbered Sources]
+    L --> M[Streamlit UI<br/>app/streamlit_app.py]
+    M -->|records turn| K
+```
+
+## Technology Stack
+
+- **Language / runtime**: Python 3.11
+- **UI**: Streamlit
+- **Orchestration**: LangChain (`langchain`, `langchain-community`, `langchain-core`, `langchain-text-splitters`)
+- **LLM & embeddings**: OpenAI (`langchain-openai`) and Google Gemini (`langchain-google-genai`) — interchangeable via config
+- **Vector store**: FAISS (`faiss-cpu`), one index per chat session per embedding provider
+- **Keyword search**: BM25 (`rank-bm25`, via `langchain_community.retrievers.BM25Retriever`)
+- **Reranking**: local cross-encoder via `sentence-transformers` (`cross-encoder/ms-marco-MiniLM-L6-v2`) — no extra API or hosted service
+- **Document parsing**: `pypdf` (PDF), `python-docx` (DOCX)
+- **Config**: `PyYAML` (`config/config.yaml` — every tunable value lives here, nothing hardcoded)
+- **Secrets**: `python-dotenv` (`config/.env`)
 
 ## Project Structure
 
 ```text
 RAG_CHATBOT/
-+-- app/
-|   +-- streamlit_app.py      # Main Streamlit application
-|   +-- gradio_app.py         # Placeholder for a Gradio UI
-|   +-- assets/               # App logo and favicon assets
-+-- config/
-|   +-- config.json           # Runtime configuration
-|   +-- .env                  # Local API keys, not for source control
-+-- data/
-|   +-- uploads/              # Uploaded files, grouped by chat session
-+-- modules/
-|   +-- embedder.py           # Embedding model and FAISS index handling
-|   +-- loader.py             # PDF/DOCX/TXT loaders
-|   +-- memory.py             # Conversation memory helpers
-|   +-- rag_chain.py          # Chat and RAG chains
-|   +-- retriever.py          # Base and multi-query retrievers
-|   +-- splitter.py           # Document chunking
-|   +-- utils.py              # Provider utilities
-+-- vectorstores/             # Persisted FAISS indexes
-+-- requirements.txt
-+-- README.md
+├── app/
+│   ├── streamlit_app.py       # Main Streamlit application (chat UI, indexing, sources, memory)
+│   ├── gradio_app.py          # Placeholder only — not implemented, not in scope
+│   └── assets/                # Logo and favicon images
+├── config/
+│   ├── config.yaml            # All configurable values: providers, chunking, retrieval, reranking, prompt, memory, upload, logging
+│   └── .env                   # OPENAI_API_KEY / GEMINI_API_KEY — not committed to source control
+├── data/
+│   ├── sample_docs/           # 8 sample one-page HR documents for a fictional company, for testing
+│   └── uploads/<chat_id>/     # Uploaded files, created at runtime, grouped per chat session
+├── logs/
+│   └── hoopoe.log             # Rotating application log (level/path set in config.yaml)
+├── modules/
+│   ├── __init__.py
+│   ├── utils.py                # load_config(), get_logger(), get_embedding_model()
+│   ├── loader.py                # PDF / DOCX / TXT loading into LangChain Documents
+│   ├── splitter.py              # Chunking (RecursiveCharacterTextSplitter)
+│   ├── embedder.py               # FAISS index create / load / self-healing rebuild, per chat + provider
+│   ├── bm25_retriever.py         # BM25 keyword retriever, built fresh from each chat's chunks
+│   ├── retriever.py               # get_hybrid_retriever() — combines FAISS + BM25 (EnsembleRetriever)
+│   ├── reranker.py                # CrossEncoderReranker — rescoring and top-k selection
+│   ├── memory.py                   # Recent-turn memory + running conversation summary
+│   └── rag_chain.py                 # RetrievalPipeline, build_chat_chain, build_rag_chain, citations, hallucination guard
+├── vectorstores/<chat_id>/<provider>/   # Persisted FAISS indexes (index.faiss + index.pkl)
+├── requirements.txt
+└── README.md
 ```
-
-## Requirements
-
-- Python 3.11 recommended
-- An OpenAI API key for OpenAI chat, OpenAI embeddings, and summary memory
-- A Gemini API key if using Gemini chat or Gemini embeddings
 
 ## Setup
 
-Create and activate a virtual environment:
+1. **Clone the repository and open it in your project folder.**
 
-```powershell
-python -m venv myenv
-.\myenv\Scripts\Activate.ps1
-```
+2. **Create and activate a virtual environment** (Python 3.11 recommended):
 
-Install dependencies:
+   ```powershell
+   python -m venv myenv
+   .\myenv\Scripts\Activate.ps1
+   ```
 
-```powershell
-pip install -r requirements.txt
-```
+3. **Install dependencies:**
 
-Create `config/.env` with the API keys you plan to use:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+   The first time reranking runs, `sentence-transformers` downloads the cross-encoder model (~90 MB) — this needs network access once, after which it's cached locally.
+
+4. **Create `config/.env`** with the API key(s) you plan to use (see [Environment Variables](#environment-variables) below).
+
+5. **Review `config/config.yaml`** — every tunable value (LLM/embedding provider, chunk size, hybrid weights, reranking thresholds, memory window, upload limits, log level) lives here. Nothing is hardcoded in the Python modules. Defaults are already set for OpenAI as the provider; switch `llm.provider` / `embedding.provider` to `"gemini"` if you'd rather default to Gemini.
+
+## Environment Variables
+
+Set these in `config/.env` (never commit real keys):
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-Do not commit real API keys. If this repository has ever been shared with keys inside `config/.env`, rotate those keys.
+| Variable | Required for |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI chat, OpenAI embeddings, **and conversation summary memory** (summary memory always uses OpenAI internally — see [Limitations](#limitations)) |
+| `GEMINI_API_KEY` | Gemini chat and Gemini embeddings |
 
-## Configuration
+You only strictly need the key for whichever provider(s) you select in `config.yaml` / the sidebar — except `OPENAI_API_KEY`, which summary memory needs regardless of your chat provider choice. Without it, summary memory degrades gracefully to "unavailable" rather than crashing; recent-turn memory keeps working either way.
 
-Main settings live in `config/config.json`.
+## Running the App
 
-Important fields:
-
-- `llm_provider`: Chat model provider. Supported values are `openai`, `gemini`, or `google`.
-- `embedding_provider`: Embedding provider. Supported values are `openai`, `gemini`, or `google`.
-- `vector_store.type`: Currently supports `faiss`.
-- `retriever.type`: Use `base` or `multiquery`.
-- `retriever.top_k`: Number of chunks returned during retrieval.
-- `prompt.system_prompt`: System behavior for Hoopoe.
-- `prompt.temperature`: Chat model temperature.
-- `memory.enabled_default`: Whether memory starts enabled in the UI.
-- `memory.max_memory_window`: Number of recent turns retained.
-- `chunking.chunk_size`: Character size for document chunks.
-- `chunking.chunk_overlap`: Character overlap between chunks.
-
-Example:
-
-```json
-{
-  "llm_provider": "openai",
-  "embedding_provider": "openai",
-  "vector_store": {
-    "type": "faiss",
-    "local": {
-      "faiss_path": "vectorstores/faiss_index"
-    }
-  },
-  "retriever": {
-    "type": "base",
-    "top_k": 3
-  }
-}
-```
-
-## Run the App
-
-Start the Streamlit app from the project root:
+From the project root:
 
 ```powershell
 streamlit run app/streamlit_app.py
 ```
 
-Streamlit will print a local URL, usually:
+Streamlit will print a local URL, typically:
 
 ```text
 http://localhost:8501
 ```
 
-## Deploy on Render
+Open it, then:
 
-This project includes `.python-version` with Python `3.11` for Render. Render's current default Python can be newer than some ML/LangChain packages support, so keep this file in the repository.
+1. Upload a document from `data/sample_docs/` (or your own PDF/DOCX/TXT, up to the configured size limit) using the sidebar.
+2. Click **Index Document**.
+3. Ask a question in the chat box.
+4. Sources appear as a caption under each grounded answer.
+5. Use **New Chat** to start a completely fresh, document-less session, or **Clear Conversation** to reset just the chat history and memory while keeping the currently indexed document.
 
-Use this Render start command:
+If no document is indexed yet, Hoopoe still responds — as a general assistant, with no citations — until you index something.
+
+## Sample Inputs & Outputs
+
+The examples below use two of the real sample documents (`leave_policy.docx`, `it_policies.pdf`, both under `data/sample_docs/` for the fictional "Meridian Softworks Pvt. Ltd."). The retrieval, reranking, and citation numbering shown here were verified end-to-end in this project's own automated tests (Module 9); the exact wording an LLM produces will naturally vary a little each time you run it, since that part depends on the live model call.
+
+**1. A question answered from a single document:**
+
+> **You:** How many days of earned leave can I carry forward to next year?
+>
+> **Hoopoe:** Employees may carry forward up to 10 days of unused Earned Leave to the following year [1]. Casual Leave and Sick Leave do not carry forward and lapse on December 31 [1].
+>
+> *Sources: leave_policy.docx*
+
+**2. A question that benefits from keyword (BM25) matching, e.g. an exact term:**
+
+> **You:** What are the password requirements for company accounts?
+>
+> **Hoopoe:** Passwords must be at least 12 characters long and include upper case, lower case, numbers, and symbols [1]. Multi-factor authentication (MFA) is mandatory for email, VPN, and all cloud business applications [1].
+>
+> *Sources: it_policies.pdf*
+
+**3. A follow-up question testing conversational memory** (same chat as example 1):
+
+> **You:** What about casual leave — does that carry forward too?
+>
+> **Hoopoe:** No — Casual Leave does not carry forward; it lapses on December 31 each year, unlike Earned Leave, which allows up to 10 days to carry forward [1].
+>
+> *Sources: leave_policy.docx*
+
+Note how example 3 correctly resolves "that" to leave policy from the ongoing conversation, without the user having to restate the topic — this is the recent-turn memory (and, once a couple more turns accumulate, the running summary) feeding into the prompt.
+
+**4. An off-topic question with a document indexed:**
+
+> **You:** What's the capital of France?
+>
+> **Hoopoe:** The information was not found in the uploaded documents.
+
+This is the hallucination guard: when nothing retrieved clears the relevance threshold, Hoopoe says so instead of answering from general knowledge or guessing.
+
+## Key Design Decisions
+
+- **Per-chat, per-provider FAISS isolation** (`vectorstores/<chat_id>/<provider>/`): each chat session's index is fully separate from every other chat's, and from other embedding providers' indexes, so switching providers or running multiple chats side by side never mixes or corrupts unrelated data.
+- **Always rebuild the retrieval pipeline from a chat's full accumulated chunk list, not incrementally.** When a chat's document set changes (a new file is indexed), the FAISS index, BM25 retriever, and reranker are rebuilt together from every chunk indexed so far in that chat — not just the newest file's chunks. This trades a bit of re-embedding cost for a hard guarantee that no previously uploaded file is ever silently dropped from search.
+- **Hybrid retrieval weights (`retrieval.vector_weight: 0.6`, `retrieval.bm25_weight: 0.4`)**: vector search is weighted higher since it generalizes better across paraphrased questions, while BM25 still meaningfully influences ranking for exact-term questions ("MFA", "12 characters") that embeddings alone sometimes rank lower than they should.
+- **Reranking thresholds** (`reranking.initial_k: 30`, `final_k: 5`, `min_relevance_score: -2.0`): retrieve a wide candidate pool (30) so the reranker has enough to work with, but only pass the best 5 to the LLM to keep context focused and latency reasonable. `min_relevance_score` is the hallucination guard's cutoff — when every reranked candidate scores below it, Hoopoe reports "not found" instead of answering from weak matches.
+- **Citations are built in code, not parsed from the LLM's text.** `combine_docs()` and `build_citations()` both number the same retrieved chunk list the same way, so the `[n]` markers the LLM is instructed to use and the citations shown in the UI can never drift out of sync with each other.
+- **The conversation-summary memory bug was fixed by introducing one explicit `record_turn()` function** that updates both memory layers (recent-turn and summary) in a single call from the app, replacing a bug where the summary-refresh logic lived only inside an `add_memory_to_chain()` wrapper the app never actually called — so summaries silently never advanced. Read and write are now kept on separate sides of the RAG chain: the chain only reads memory, and the caller is responsible for persisting the turn afterward, specifically to prevent this class of bug from recurring.
+
+## Limitations
+
+- **BM25 is in-memory and rebuilt per session** — unlike the FAISS index, it is not persisted to disk. It's reconstructed every time a document is (re)indexed or the app restarts, from that chat's chunks.
+- **Local FAISS + ephemeral hosting**: on platforms with an ephemeral filesystem (e.g. a free-tier deployment), uploaded files and vector indexes can disappear after a restart unless persistent storage is attached.
+- **Cross-encoder reranking adds latency**: every question pays for an extra scoring pass over up to 30 candidates, and the model downloads once (~90 MB) on first use.
+- **Summary memory always requires `OPENAI_API_KEY`**, even when Gemini is selected as the chat provider, since it's built on LangChain's `ConversationSummaryMemory` with an OpenAI model internally. Without that key, summary memory reports itself as unavailable rather than crashing; recent-turn memory is unaffected.
+- **Re-indexing cost grows with a chat's file count**: because the pipeline always rebuilds from every chunk indexed so far in a chat (see Key Design Decisions), indexing a chat's fifth document re-embeds the previous four as well.
+
+## Deployment Notes
+
+The project includes a `.python-version` pinning Python 3.11 for hosting platforms whose default Python can be newer than some of these ML/LangChain packages support — keep this file in the repository.
+
+Example start command for a platform like Render:
 
 ```bash
 streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT
 ```
 
-Set these environment variables in Render:
-
-```text
-OPENAI_API_KEY
-GEMINI_API_KEY
-```
-
-The app uses local FAISS indexes. On Render's free/ephemeral filesystem, uploaded files and vector indexes can disappear after restarts unless you attach persistent storage.
-
-## Usage
-
-1. Open the Streamlit app in your browser.
-2. Choose the LLM provider from the sidebar.
-3. Toggle memory on or off.
-4. Upload a PDF, DOCX, or TXT file.
-5. Click `Index Document`.
-6. Ask questions in the chat input.
-
-If no document is indexed, Hoopoe behaves like a regular chat assistant. Once a document is indexed, responses are generated from retrieved document chunks first.
-
-## Data and Indexes
-
-Uploaded documents are saved under:
-
-```text
-data/uploads/<chat_id>/
-```
-
-FAISS indexes are saved under:
-
-```text
-vectorstores/<chat_id>/<embedding_provider>/
-```
-
-These folders can become large and may contain private documents. Keep them out of source control unless you intentionally want to version them.
+Set `OPENAI_API_KEY` and `GEMINI_API_KEY` as environment variables on the host rather than committing `config/.env`.
 
 ## Troubleshooting
 
-### `JSONDecodeError` while loading config
+**`Config file not found at ...`** — `config/config.yaml` is missing or the app isn't being run from the project root. Confirm the file exists and you're running `streamlit run app/streamlit_app.py` from `RAG_CHATBOT/`.
 
-Validate the config file:
+**`OpenAI API key must be provided` / `Gemini API key must be provided`** — add the corresponding key to `config/.env` and restart Streamlit.
 
-```powershell
-python -m json.tool .\config\config.json
-```
+**`No readable text was found in the uploaded document.`** — the file may be scanned/image-only, encrypted, or otherwise not text-extractable by the current loaders. Try a text-based PDF, DOCX, or TXT file instead.
 
-JSON requires double-quoted property names, no comments, and no trailing commas.
+**A file uploaded earlier doesn't seem to be searched anymore** — each chat's index is rebuilt from that chat's own accumulated chunks; uploading to a *different* chat session won't include files indexed in another one. Check the "Indexed files" list in the sidebar for the active chat.
 
-### `OpenAI API key must be provided`
-
-Add `OPENAI_API_KEY` to `config/.env`, then restart Streamlit.
-
-### `Gemini API key must be provided`
-
-Add `GEMINI_API_KEY` to `config/.env`, then restart Streamlit.
-
-### `No readable text was found in the uploaded document`
-
-The file may be scanned, image-only, encrypted, or otherwise not readable by the current loaders. Try a text-based PDF, DOCX, or TXT file.
-
-## Notes
-
-- The current production entrypoint is `app/streamlit_app.py`.
-- `app/gradio_app.py` exists but does not currently implement a Gradio UI.
-- Summary memory currently uses OpenAI, so memory summaries require `OPENAI_API_KEY` even when Gemini is selected for chat.
+**Check `logs/hoopoe.log`** for a detailed trace of any error shown in the UI — every caught exception is logged there before the user-facing message is shown.
