@@ -384,17 +384,10 @@ show_app_title()
 with st.sidebar:
     st.markdown("### ⚙️ Chat Settings")
 
-    new_chat_col, clear_chat_col = st.columns(2)
-    with new_chat_col:
-        if st.button("New Chat", use_container_width=True):
-            st.session_state.latest_chat_number += 1
-            start_new_chat()
-            active_chat_id = current_chat_id()
-    with clear_chat_col:
-        if st.button("Clear Conversation", use_container_width=True):
-            clear_session_memory(active_chat_id)
-            st.session_state.messages[active_chat_id] = [{"role": "assistant", "content": GREETING}]
-            st.rerun()
+    if st.button("➕ New Chat", use_container_width=True):
+        st.session_state.latest_chat_number += 1
+        start_new_chat()
+        active_chat_id = current_chat_id()
 
     chat_ids = list(st.session_state.chat_names.keys())
     selected_chat_id = st.selectbox(
@@ -405,6 +398,13 @@ with st.sidebar:
     )
     st.session_state.active_chat_id = selected_chat_id
     active_chat_id = selected_chat_id
+
+    # Placed right below the chat selector, not next to New Chat, since it
+    # acts on whichever chat is selected above - not on the sidebar as a whole.
+    if st.button("🧹 Clear Conversation", use_container_width=True):
+        clear_session_memory(active_chat_id)
+        st.session_state.messages[active_chat_id] = [{"role": "assistant", "content": GREETING}]
+        st.rerun()
 
     st.session_state.llm_provider = st.selectbox(
         "LLM Provider",
