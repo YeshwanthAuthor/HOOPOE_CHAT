@@ -333,18 +333,79 @@ def hoopoe_spinner(text: str):
 
 
 def apply_sidebar_style():
+    """Sidebar look-and-feel, in three parts:
+      1. Static, no internal scrollbar - the sidebar grows to fit its
+         content (New Chat, chat picker, Clear Conversation, provider,
+         memory toggle, document uploader, indexed-files list) instead of
+         being pinned to the viewport height with its own scroller.
+      2. A consistent, compact vertical rhythm between every widget so the
+         sidebar reads as one neatly stacked column instead of default
+         Streamlit spacing (which varies widget to widget).
+      3. A visibly distinct sidebar-collapse toggle - Streamlit's default
+         arrow icon is a faint outline that's easy to miss, especially on
+         a dark background. Selectors below target both places that
+         control appears: attached to the sidebar itself when it's open,
+         and floating over the main area when it's collapsed. Streamlit
+         doesn't publish these as a stable public API, so if a Streamlit
+         upgrade ever renames them and the toggle stops looking different,
+         these selectors are the first thing to re-check in the browser's
+         dev tools.
+    """
     st.markdown(
         """
         <style>
-            [data-testid="stSidebarContent"] {
+            /* --- 1. Static sidebar: no internal scroller ------------------ */
+            [data-testid="stSidebar"] {
+                position: relative !important;
+                height: auto !important;
+                min-height: 100vh;
+            }
+            [data-testid="stSidebarContent"],
+            [data-testid="stSidebarUserContent"] {
+                height: auto !important;
+                overflow: visible !important;
                 padding-top: 1.25rem;
             }
+
+            /* --- 2. Neat, consistent stacking of every sidebar widget ----- */
+            [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+                gap: 0.6rem;
+            }
             [data-testid="stSidebar"] h3 {
-                margin: 0 0 0.35rem 0;
+                margin: 0 0 0.5rem 0;
                 padding: 0;
             }
             [data-testid="stSidebar"] hr {
-                margin: 1rem 0 0.85rem 0;
+                margin: 0.9rem 0 0.7rem 0;
+            }
+            [data-testid="stSidebar"] .stButton,
+            [data-testid="stSidebar"] .stSelectbox,
+            [data-testid="stSidebar"] .stToggle,
+            [data-testid="stSidebar"] .stFileUploader {
+                margin-bottom: 0.15rem;
+            }
+
+            /* --- 3. A sidebar-collapse toggle that's actually visible ----- */
+            [data-testid="stSidebarCollapseButton"] button,
+            [data-testid="collapsedControl"] button,
+            [data-testid="stSidebar"] button[kind="header"],
+            [data-testid="stSidebar"] button[kind="headerNoPadding"],
+            [data-testid="collapsedControl"] button[kind="header"],
+            [data-testid="collapsedControl"] button[kind="headerNoPadding"] {
+                background-color: #FF4B4B !important;
+                border-radius: 8px !important;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            }
+            [data-testid="stSidebarCollapseButton"] button:hover,
+            [data-testid="collapsedControl"] button:hover {
+                background-color: #e0423f !important;
+            }
+            [data-testid="stSidebarCollapseButton"] svg,
+            [data-testid="collapsedControl"] svg {
+                fill: #FFFFFF !important;
+                color: #FFFFFF !important;
+                width: 1.3rem !important;
+                height: 1.3rem !important;
             }
         </style>
         """,
