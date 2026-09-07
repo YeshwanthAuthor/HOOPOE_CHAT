@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import copy
 import hashlib
 import sys
@@ -16,6 +17,7 @@ if str(PROJECT_DIR) not in sys.path:
 PAGE_TITLE = "Hoopoe | RAG Chat"
 APP_ICON = PROJECT_DIR / "app" / "assets" / "Hoopoe_display.png"
 PAGE_ICON = PROJECT_DIR / "app" / "assets" / "Hoopoe_favicon.png"
+APP_ICON_B64 = base64.b64encode(APP_ICON.read_bytes()).decode("utf-8")
 UPLOAD_FOLDER = PROJECT_DIR / "data" / "uploads"
 GREETING = "Hi, I am Hoopoe. How can I help you today?"
 
@@ -89,6 +91,15 @@ def prepare_app_state(config):
 
     if "pending_user_message" not in st.session_state:
         st.session_state.pending_user_message = None
+
+    if "indexing_in_progress" not in st.session_state:
+        st.session_state.indexing_in_progress = False
+
+    if "pending_upload_files" not in st.session_state:
+        st.session_state.pending_upload_files = None
+
+    if "last_indexing_result" not in st.session_state:
+        st.session_state.last_indexing_result = None
 
     if not st.session_state.chat_names:
         start_new_chat()
@@ -242,11 +253,10 @@ def add_message(chat_id, role, content, citations=None):
 
 
 def show_app_title():
-    icon_data = base64.b64encode(APP_ICON.read_bytes()).decode("utf-8")
     st.markdown(
         f"""
         <div style="display:flex; align-items:center; gap:14px; margin: 0 0 1.5rem 0;">
-            <img src="data:image/png;base64,{icon_data}" width="76" height="76"
+            <img src="data:image/png;base64,{APP_ICON_B64}" width="76" height="76"
                  style="object-fit:contain; display:block;" />
             <h1 style="margin:0; padding:0 0 4px 0; line-height:1; font-size:3.2rem; font-weight:700;">
                 Hoopoe
@@ -255,6 +265,71 @@ def show_app_title():
         """,
         unsafe_allow_html=True,
     )
+
+
+HOOPOE_SPINNER_CSS = """
+<style>
+@keyframes hoopoe-glide {
+    0%   { transform: translateX(0px); }
+    50%  { transform: translateX(16px); }
+    100% { transform: translateX(0px); }
+}
+@keyframes hoopoe-flutter {
+    0%, 100% { transform: translateY(0px) rotate(-6deg); }
+    25%      { transform: translateY(-7px) rotate(3deg); }
+    50%      { transform: translateY(0px) rotate(6deg); }
+    75%      { transform: translateY(-4px) rotate(-3deg); }
+}
+.hoopoe-spinner-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0;
+}
+.hoopoe-spinner-outer {
+    display: inline-block;
+    animation: hoopoe-glide 1.6s ease-in-out infinite;
+}
+.hoopoe-spinner-bird {
+    display: block;
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+    animation: hoopoe-flutter 0.5s ease-in-out infinite;
+}
+.hoopoe-spinner-text {
+    font-size: 0.95rem;
+    color: inherit;
+}
+</style>
+"""
+
+
+@contextlib.contextmanager
+def hoopoe_spinner(text: str):
+    """Drop-in replacement for st.spinner: shows the Hoopoe icon animated
+    with CSS to look like it's fluttering/flying in place, next to a status
+    message, for the two slow actions in this app (indexing documents,
+    generating a chat response). Usage is identical to st.spinner:
+    `with hoopoe_spinner("Thinking..."):`.
+    """
+    placeholder = st.empty()
+    placeholder.markdown(
+        HOOPOE_SPINNER_CSS
+        + f"""
+        <div class="hoopoe-spinner-wrap">
+            <span class="hoopoe-spinner-outer">
+                <img class="hoopoe-spinner-bird" src="data:image/png;base64,{APP_ICON_B64}" />
+            </span>
+            <span class="hoopoe-spinner-text">{text}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    try:
+        yield
+    finally:
+        placeholder.empty()
 
 
 def apply_sidebar_style():
@@ -360,45 +435,35 @@ with st.sidebar:
         too_large_names = ", ".join(f.name for f in too_large_files)
         st.error(f"Too large (max {max_upload_size_mb} MB each): {too_large_names}")
 
+    index_button_disabled = bool(too_large_files) or st.session_state.indexing_in_progress
     if uploaded_files and st.button(
         "Index Documents",
         type="primary",
         use_container_width=True,
-        disabled=bool(too_large_files),
+        disabled=index_button_disabled,
     ):
-        newly_indexed = []
-        already_indexed = []
-        failed = []
-        with st.spinner(f"Indexing {len(uploaded_files)} document(s)..."):
-            for uploaded_file in uploaded_files:
-                try:
-                    file_info, new_chunks = index_document(uploaded_file, active_chat_id, runtime_config)
-                    if new_chunks:
-                        newly_indexed.append(file_info)
-                    else:
-                        already_indexed.append(file_info)
-                except Exception as error:
-                    logger.error("Failed to index %s for chat %s: %s", uploaded_file.name, active_chat_id, error)
-                    failed.append((uploaded_file.name, str(error)))
+        # The actual indexing work happens later in the script, after the
+        # main chat_input is created - that way chat_input's disabled=True
+        # reaches the browser before the slow indexing work starts, instead
+        # of after it finishes. See the "indexing_in_progress" block below.
+        st.session_state.pending_upload_files = uploaded_files
+        st.session_state.indexing_in_progress = True
+        st.session_state.last_indexing_result = None
+        st.rerun()
 
-            pipeline_error = None
-            if newly_indexed:
-                try:
-                    rebuild_pipeline(active_chat_id, runtime_config)
-                except Exception as error:
-                    logger.error("Failed to rebuild retrieval pipeline for chat %s: %s", active_chat_id, error)
-                    pipeline_error = str(error)
-
-        if newly_indexed:
-            names = ", ".join(f"{info['name']} ({info['chunks']} chunks)" for info in newly_indexed)
+    last_result = st.session_state.last_indexing_result
+    if last_result:
+        if last_result["newly_indexed"]:
+            names = ", ".join(f"{info['name']} ({info['chunks']} chunks)" for info in last_result["newly_indexed"])
             st.success(f"Indexed: {names}")
-        if pipeline_error:
-            st.error(f"Indexed the file content but failed to build the search index: {pipeline_error}")
-        if already_indexed:
-            names = ", ".join(info["name"] for info in already_indexed)
+        if last_result["pipeline_error"]:
+            st.error(f"Indexed the file content but failed to build the search index: {last_result['pipeline_error']}")
+        if last_result["already_indexed"]:
+            names = ", ".join(info["name"] for info in last_result["already_indexed"])
             st.info(f"Already indexed: {names}")
-        for filename, error_message in failed:
+        for filename, error_message in last_result["failed"]:
             st.error(f"{filename}: {error_message}")
+        st.session_state.last_indexing_result = None
 
     indexed_files = st.session_state.documents[active_chat_id]["indexed_files"].values()
     if indexed_files:
@@ -413,12 +478,17 @@ show_chat_messages(active_chat_id)
 
 show_footer_note()
 
-user_message = st.chat_input(
-    "Waiting for Hoopoe..." if st.session_state.waiting_for_response else "Ask your question",
-    disabled=st.session_state.waiting_for_response,
-)
+chat_input_disabled = st.session_state.waiting_for_response or st.session_state.indexing_in_progress
+if st.session_state.waiting_for_response:
+    chat_placeholder = "Waiting for Hoopoe..."
+elif st.session_state.indexing_in_progress:
+    chat_placeholder = "Indexing documents..."
+else:
+    chat_placeholder = "Ask your question"
 
-if user_message and not st.session_state.waiting_for_response:
+user_message = st.chat_input(chat_placeholder, disabled=chat_input_disabled)
+
+if user_message and not chat_input_disabled:
     add_message(active_chat_id, "user", user_message)
     st.session_state.pending_user_message = user_message
     st.session_state.waiting_for_response = True
@@ -426,7 +496,7 @@ if user_message and not st.session_state.waiting_for_response:
 
 if st.session_state.waiting_for_response and st.session_state.pending_user_message:
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
+        with hoopoe_spinner("Thinking..."):
             bot_reply = None
             citations = []
             try:
@@ -446,4 +516,40 @@ if st.session_state.waiting_for_response and st.session_state.pending_user_messa
     add_message(active_chat_id, "assistant", bot_reply, citations)
     st.session_state.pending_user_message = None
     st.session_state.waiting_for_response = False
+    st.rerun()
+
+if st.session_state.indexing_in_progress and st.session_state.pending_upload_files:
+    files_to_index = st.session_state.pending_upload_files
+    newly_indexed = []
+    already_indexed = []
+    failed = []
+
+    with hoopoe_spinner(f"Indexing {len(files_to_index)} document(s)..."):
+        for uploaded_file in files_to_index:
+            try:
+                file_info, new_chunks = index_document(uploaded_file, active_chat_id, runtime_config)
+                if new_chunks:
+                    newly_indexed.append(file_info)
+                else:
+                    already_indexed.append(file_info)
+            except Exception as error:
+                logger.error("Failed to index %s for chat %s: %s", uploaded_file.name, active_chat_id, error)
+                failed.append((uploaded_file.name, str(error)))
+
+        pipeline_error = None
+        if newly_indexed:
+            try:
+                rebuild_pipeline(active_chat_id, runtime_config)
+            except Exception as error:
+                logger.error("Failed to rebuild retrieval pipeline for chat %s: %s", active_chat_id, error)
+                pipeline_error = str(error)
+
+    st.session_state.last_indexing_result = {
+        "newly_indexed": newly_indexed,
+        "already_indexed": already_indexed,
+        "failed": failed,
+        "pipeline_error": pipeline_error,
+    }
+    st.session_state.pending_upload_files = None
+    st.session_state.indexing_in_progress = False
     st.rerun()
