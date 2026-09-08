@@ -670,7 +670,7 @@ if user_message and not chat_input_disabled:
 
 if st.session_state.waiting_for_response and st.session_state.pending_user_message:
     with st.chat_message("assistant"):
-        with hoopoe_spinner("Thinking..."):
+        with hoopoe_spinner("Coo-coo..."):
             bot_reply = None
             citations = []
             try:

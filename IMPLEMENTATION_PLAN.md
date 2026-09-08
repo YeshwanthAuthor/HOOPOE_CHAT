@@ -74,7 +74,7 @@ the running app.** This must be fixed for requirement 5 to actually work.
 ## Decisions locked in (do not re-litigate these)
 
 1. **Restore/base code**: the pilot app above is the base. Enhance it in place; do not restructure the folder layout.
-2. **Sample docs**: 8 one-page docs already created in `data/sample_docs/` — 3 as `.docx` (`leave_policy.docx`, `hr_handbook.docx`, `code_of_conduct.docx`), 5 as `.pdf` (`employee_policies.pdf`, `it_policies.pdf`, `travel_policy.pdf`, `benefits_documentation.pdf`, `company_faqs.pdf`). Fictional company: "Meridian Softworks Pvt. Ltd." Module 1 is **done** — no action needed, just point ingestion at this folder when testing.
+2. **Sample docs**: 8 one-page docs already created in `data/sample_docs/` — 3 as `.docx` (`leave_policy.docx`, `hr_handbook.docx`, `code_of_conduct.docx`), 5 as `.pdf` (`employee_policies.pdf`, `it_policies.pdf`, `travel_policy.pdf`, `benefits_documentation.pdf`, `company_faqs.pdf`). Fictional company: "K International Pvt. Ltd." Module 1 is **done** — no action needed, just point ingestion at this folder when testing.
 3. **LLM/embedding scope**: keep **both** OpenAI and Gemini fully supported everywhere (provider stays a config switch, same as today).
 4. **Reranking**: local, free **cross-encoder** via `sentence-transformers` (no hosted API, no new API key). Config:
    ```yaml
@@ -104,7 +104,7 @@ the running app.** This must be fixed for requirement 5 to actually work.
 
 **Full `config/config.yaml` to create:**
 ```yaml
-company_name: "Meridian Softworks Pvt. Ltd."
+company_name: "K International Pvt. Ltd."
 
 llm:
   provider: "openai"                 # "openai" or "gemini"

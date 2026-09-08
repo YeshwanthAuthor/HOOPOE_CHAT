@@ -142,7 +142,7 @@ If no document is indexed yet, Hoopoe still responds — as a general assistant,
 
 ## Sample Inputs & Outputs
 
-The examples below use two of the real sample documents (`leave_policy.docx`, `it_policies.pdf`, both under `data/sample_docs/` for the fictional "Meridian Softworks Pvt. Ltd."). The retrieval, reranking, and citation numbering shown here were verified end-to-end in this project's own automated tests (Module 9); the exact wording an LLM produces will naturally vary a little each time you run it, since that part depends on the live model call.
+The examples below use two of the real sample documents (`leave_policy.docx`, `it_policies.pdf`, both under `data/sample_docs/` for the fictional "K International Pvt. Ltd."). The retrieval, reranking, and citation numbering shown here were verified end-to-end in this project's own automated tests (Module 9); the exact wording an LLM produces will naturally vary a little each time you run it, since that part depends on the live model call.
 
 **1. A question answered from a single document:**
 
