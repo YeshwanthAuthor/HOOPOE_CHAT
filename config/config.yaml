@@ -23,6 +23,7 @@ retrieval:
   hybrid_enabled: true
   vector_weight: 0.6
   bm25_weight: 0.4
+  decompose_compound_questions: true   # split multi-topic questions and retrieve each topic separately - see rag_chain.split_into_subquestions
 
 reranking:
   enabled: true

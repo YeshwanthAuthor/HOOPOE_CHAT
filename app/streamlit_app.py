@@ -43,6 +43,7 @@ from modules.rag_chain import (
     build_chat_chain,
     build_rag_chain,
     is_small_talk,
+    retrieve_for_question,
 )
 from modules.reranker import CrossEncoderReranker
 from modules.retriever import get_hybrid_retriever
@@ -227,9 +228,11 @@ def get_bot_reply(user_message, chat_id, config):
          friendly reply, regardless of whether a document is indexed.
       2. No document indexed for this chat yet -> NO_DOCUMENT_MESSAGE,
          returned directly without calling the LLM.
-      3. Otherwise -> build_rag_chain, grounded in this chat's indexed
-         documents. Its own hallucination guard returns NOT_FOUND_MESSAGE
-         when nothing relevant enough was retrieved (see rag_chain.py).
+      3. Otherwise -> retrieve_for_question (splits compound/multi-topic
+         questions into sub-questions and retrieves each separately, see
+         rag_chain.py) then build_rag_chain, grounded in this chat's
+         indexed documents. Its own hallucination guard returns
+         NOT_FOUND_MESSAGE when nothing relevant enough was retrieved.
     """
     pipeline = st.session_state.documents[chat_id]["pipeline"]
 
@@ -242,7 +245,7 @@ def get_bot_reply(user_message, chat_id, config):
         bot_reply = NO_DOCUMENT_MESSAGE
         citations = []
     else:
-        retrieved = pipeline.invoke(user_message)
+        retrieved = retrieve_for_question(pipeline, user_message, config)
         get_answer = build_rag_chain(retrieved, config)
         result = get_answer(user_message, chat_id)
         bot_reply = result["answer"]
