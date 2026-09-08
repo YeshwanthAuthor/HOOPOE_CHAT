@@ -358,16 +358,21 @@ def show_hoopoe_spinner_css():
 
 def apply_sidebar_style():
     """Sidebar look-and-feel, in three parts:
-      1. Static, no sidebar-wide scrollbar, content pulled up to the top -
-         the sidebar grows to fit its content (New Chat, chat picker, Clear
-         Conversation, provider, memory toggle, document uploader) instead
-         of being pinned to the viewport height with its own scroller, and
-         the near-zero top padding starts that content right at the top
-         instead of leaving a gap under the collapse-toggle header. The one
-         exception is the indexed-files list, which gets its own small
-         fixed-height scrollable box (via st.container(height=...) where
-         it's rendered below) - that's the only scroller in the sidebar,
-         and it only appears once files are actually indexed.
+      1. Content pulled up to the top, with the near-zero top padding
+         starting it right under the collapse-toggle header instead of
+         leaving a gap. This used to also force the sidebar to never scroll
+         as a whole (height:auto + overflow:visible) - but Streamlit's outer
+         app shell doesn't scroll either, so once the sidebar's own content
+         (uploader, file lists, etc.) grew taller than the browser window,
+         the overflow had nowhere to go: it was simply clipped, with no
+         scrollbar anywhere to reach it. That's what made the "Files
+         attached" / "Indexed files" boxes look broken - they were rendering
+         fine, just below the reachable area. Streamlit's own default
+         "the sidebar scrolls as a whole if its content doesn't fit" is kept
+         as the safety net for that case; day to day, with only a handful of
+         files, nothing scrolls at the sidebar level at all, and the two
+         file-list boxes below (each its own st.container(height=...)) are
+         the only things that scroll, right where they are.
       2. A consistent, compact vertical rhythm between every widget so the
          sidebar reads as one neatly stacked column instead of default
          Streamlit spacing (which varies widget to widget).
@@ -384,16 +389,9 @@ def apply_sidebar_style():
     st.markdown(
         """
         <style>
-            /* --- 1. Static sidebar: no internal scroller ------------------ */
-            [data-testid="stSidebar"] {
-                position: relative !important;
-                height: auto !important;
-                min-height: 100vh;
-            }
+            /* --- 1. Content pulled up to the top -------------------------- */
             [data-testid="stSidebarContent"],
             [data-testid="stSidebarUserContent"] {
-                height: auto !important;
-                overflow: visible !important;
                 padding-top: 0.25rem;
             }
 
