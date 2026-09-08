@@ -117,6 +117,12 @@ def prepare_app_state(config):
     if "last_indexing_result" not in st.session_state:
         st.session_state.last_indexing_result = None
 
+    if "uploader_key_counter" not in st.session_state:
+        # Bumped after every indexing batch finishes so the file_uploader
+        # widget below gets a fresh key and resets to an empty selection -
+        # see the comment where it's incremented for why.
+        st.session_state.uploader_key_counter = 0
+
     if not st.session_state.chat_names:
         start_new_chat()
 
@@ -568,6 +574,13 @@ with st.sidebar:
         f"Upload {'/'.join(ext.upper() for ext in allowed_extensions)} (max {max_upload_size_mb} MB each)",
         type=allowed_extensions,
         accept_multiple_files=True,
+        # Keyed on a counter bumped after every indexing batch finishes, so
+        # the widget gets a fresh instance (and an empty selection) right
+        # after indexing - otherwise Streamlit keeps showing the
+        # already-indexed files as "attached" here indefinitely, duplicating
+        # the "Indexed files" list below. See uploader_key_counter's init in
+        # prepare_app_state and where it's incremented, below.
+        key=f"document_uploader_{st.session_state.uploader_key_counter}",
     )
 
     if uploaded_files:
@@ -607,8 +620,12 @@ with st.sidebar:
     last_result = st.session_state.last_indexing_result
     if last_result:
         if last_result["newly_indexed"]:
-            names = ", ".join(f"{info['name']} ({info['chunks']} chunks)" for info in last_result["newly_indexed"])
-            st.success(f"Indexed: {names}")
+            # A transient toast instead of a persistent st.success box - the
+            # per-file names and chunk counts it used to repeat are already
+            # shown in the "Indexed files" list below, so this is just a
+            # quick confirmation that indexing finished, not another place
+            # listing the same details.
+            st.toast("Documents indexed successfully.", icon="✅")
         if last_result["pipeline_error"]:
             st.error(f"Indexed the file content but failed to build the search index: {last_result['pipeline_error']}")
         if last_result["already_indexed"]:
@@ -709,4 +726,10 @@ if st.session_state.indexing_in_progress and st.session_state.pending_upload_fil
     }
     st.session_state.pending_upload_files = None
     st.session_state.indexing_in_progress = False
+    # Give the file_uploader a fresh key on the next render so it resets to
+    # an empty selection - see the widget's own comment above. Bumped
+    # unconditionally (success, partial failure, or full failure) since the
+    # batch is done being processed either way; last_indexing_result above
+    # still surfaces exactly what happened, per file.
+    st.session_state.uploader_key_counter += 1
     st.rerun()
