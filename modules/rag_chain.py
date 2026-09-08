@@ -1,7 +1,11 @@
 """Builds the final answer for a user question.
 
+The app is restricted to document Q&A: build_chat_chain is only used for
+short greetings/pleasantries (see is_small_talk below), never as a general
+knowledge fallback. Anything else must be grounded in indexed documents.
+
 Two chains are exposed:
-  - build_chat_chain(config)              -> general chat, no documents involved
+  - build_chat_chain(config)              -> small-talk replies only, no documents involved
   - build_rag_chain(retrieved, config)    -> answer grounded in retrieved chunks,
                                               with numbered [1]..[n] citations
 
@@ -11,12 +15,14 @@ is all that's needed. Retrieval + reranking happen *before* build_rag_chain
 is called, through RetrievalPipeline (also defined here). The full sequence
 for one question:
 
-  1. retrieved = RetrievalPipeline(...).invoke(query)   -> hybrid search, then rerank
-  2. get_answer = build_rag_chain(retrieved, config)     -> returns a function
-  3. result = get_answer(question, session_id)           -> {"answer": str, "citations": [...]}
+  1. is_small_talk(question)                             -> route to build_chat_chain if True
+  2. retrieved = RetrievalPipeline(...).invoke(query)   -> hybrid search, then rerank
+  3. get_answer = build_rag_chain(retrieved, config)     -> returns a function
+  4. result = get_answer(question, session_id)           -> {"answer": str, "citations": [...]}
 """
 
 import os
+import re
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -31,8 +37,45 @@ logger = get_logger(__name__)
 env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", ".env"))
 load_dotenv(dotenv_path=env_path)
 
-# Shown to the user instead of a guess when there is nothing to answer from.
-NOT_FOUND_MESSAGE = "The information was not found in the uploaded documents."
+# Shown to the user instead of a guess when a document is indexed but the
+# question isn't answered by it - i.e. no retrieved chunk individually
+# clears reranking.min_relevance_score. See build_rag_chain's relevance
+# filter/hallucination guard.
+NOT_FOUND_MESSAGE = "No response found for the asked question in the documentation."
+
+# Shown when the chat has no document indexed at all yet, so there is
+# nothing to ground an answer in - used in place of the old general-chat
+# fallback (see get_bot_reply in app/streamlit_app.py).
+NO_DOCUMENT_MESSAGE = "Please upload a document before asking questions."
+
+# Short greetings/pleasantries that bypass document grounding entirely and
+# get a normal friendly reply from build_chat_chain instead of NOT_FOUND_MESSAGE
+# or NO_DOCUMENT_MESSAGE. Deliberately a small, exact-match phrase list rather
+# than an LLM classification call, so it stays free, instant, and predictable.
+SMALL_TALK_PHRASES = {
+    "hi", "hello", "hey", "hiya", "yo",
+    "good morning", "good afternoon", "good evening", "good night",
+    "thanks", "thank you", "thanks a lot", "thank you so much", "thx", "ty",
+    "bye", "goodbye", "see you", "see ya", "take care",
+    "ok", "okay", "k", "cool", "great", "nice", "sure", "sounds good",
+    "how are you", "how are you doing", "whats up", "sup",
+    "who are you", "what can you do", "what is your name",
+}
+
+
+def is_small_talk(text: str) -> bool:
+    """True for a short greeting/pleasantry that doesn't need document
+    grounding. Conservative on purpose: only an exact match (after lowercasing
+    and stripping punctuation) against SMALL_TALK_PHRASES counts, and anything
+    longer than 6 words is never treated as small talk - so "hi, what's the
+    leave policy?" still gets routed through document retrieval instead of
+    being waved through as a greeting.
+    """
+    normalized = re.sub(r"[^\w\s]", "", text.strip().lower())
+    if not normalized or len(normalized.split()) > 6:
+        return False
+    return normalized in SMALL_TALK_PHRASES
+
 
 CHAT_PROMPT_TEMPLATE = """
 System Prompt:
@@ -47,9 +90,10 @@ Recent Chat History:
 User Question:
 {question}
 
-Respond naturally and helpfully. If the user asks about a document but no document
-has been uploaded, say that you can answer generally and that uploading a document
-will let you answer from that source.
+This is a short greeting or pleasantry (not a substantive question - the caller
+only routes messages here after is_small_talk() matches them). Respond
+naturally and briefly. Do not attempt to answer factual questions here, even
+if one is implied - this app only answers questions from indexed documents.
 """
 
 RAG_PROMPT_TEMPLATE = """
@@ -70,8 +114,9 @@ User Question:
 
 Answer only using the Retrieved Context above. Cite the bracket number, like [1],
 immediately after any fact you take from the context. Only use numbers that appear
-in the Retrieved Context above. If the context does not answer the question, say
-the information was not found in the uploaded documents - do not guess.
+in the Retrieved Context above. If the context does not answer the question, reply
+exactly: "No response found for the asked question in the documentation." - do not
+guess, and do not answer from general knowledge.
 """
 
 
@@ -197,7 +242,13 @@ def build_citations(docs) -> list:
 
 
 def build_chat_chain(config: dict):
-    """General conversation, no retrieved documents involved.
+    """Small-talk replies only - no retrieved documents involved.
+
+    This is NOT a general-knowledge fallback: the app restricts users to
+    document Q&A, so the caller (get_bot_reply in app/streamlit_app.py) only
+    reaches this chain when is_small_talk(question) is True. Every other
+    question goes through build_rag_chain, or gets NO_DOCUMENT_MESSAGE if no
+    document is indexed yet for the chat.
 
     Returns get_answer(question, session_id=None) -> {"answer": str,
     "citations": []}, matching build_rag_chain's return shape so the UI can
@@ -260,19 +311,38 @@ def build_rag_chain(retrieved: list, config: dict):
             return {"answer": NOT_FOUND_MESSAGE, "citations": []}
 
         # Reranking assigns a real float score to every doc; when it is
-        # skipped (disabled, or no reranker given) every score is None, so
-        # this guard only fires when reranking actually ran and every
-        # candidate scored below the configured threshold.
+        # skipped (disabled, or no reranker given) every score is None and
+        # there is no relevance signal to filter on, so every retrieved
+        # candidate is kept as-is. When reranking did run, keep only the
+        # chunks that individually clear min_relevance_score.
+        #
+        # This must be a per-chunk filter, not just an all-below-threshold
+        # check: CrossEncoderReranker.rerank() always returns exactly
+        # final_k chunks (a *count* cap), so if even one of them is a good
+        # match the other final_k-1 slots still get filled with whatever
+        # scored next best - even chunks from unrelated documents that
+        # scored below the relevance threshold. Without filtering those out
+        # here, they'd ride along into both the LLM's context and the
+        # "Sources" list shown to the user.
         reranking_ran = all(score is not None for score in scores)
-        if reranking_ran and all(score < min_relevance_score for score in scores):
-            logger.info(
-                "All %d rerank scores below min_relevance_score=%s for question %r.",
-                len(scores), min_relevance_score, question,
-            )
-            return {"answer": NOT_FOUND_MESSAGE, "citations": []}
+        if reranking_ran:
+            relevant_docs = [doc for doc, score in zip(docs, scores) if score >= min_relevance_score]
+            if not relevant_docs:
+                logger.info(
+                    "All %d rerank scores below min_relevance_score=%s for question %r.",
+                    len(scores), min_relevance_score, question,
+                )
+                return {"answer": NOT_FOUND_MESSAGE, "citations": []}
+            if len(relevant_docs) < len(docs):
+                logger.info(
+                    "Dropped %d of %d retrieved chunk(s) below min_relevance_score=%s for question %r.",
+                    len(docs) - len(relevant_docs), len(docs), min_relevance_score, question,
+                )
+        else:
+            relevant_docs = docs
 
-        context = combine_docs(docs)
-        citations = build_citations(docs)
+        context = combine_docs(relevant_docs)
+        citations = build_citations(relevant_docs)
         memory_summary, recent_memory = _get_memory_context(session_id, memory_enabled)
         prompt_text = prompt_template.format(
             system_prompt=system_prompt,

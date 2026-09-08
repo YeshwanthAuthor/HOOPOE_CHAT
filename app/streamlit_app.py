@@ -37,7 +37,13 @@ from modules.bm25_retriever import build_bm25_retriever
 from modules.embedder import create_retriever
 from modules.loader import load_document
 from modules.memory import clear_session_memory, record_turn
-from modules.rag_chain import RetrievalPipeline, build_chat_chain, build_rag_chain
+from modules.rag_chain import (
+    NO_DOCUMENT_MESSAGE,
+    RetrievalPipeline,
+    build_chat_chain,
+    build_rag_chain,
+    is_small_talk,
+)
 from modules.reranker import CrossEncoderReranker
 from modules.retriever import get_hybrid_retriever
 from modules.splitter import split_doc
@@ -214,17 +220,33 @@ def rebuild_pipeline(chat_id, config):
 
 
 def get_bot_reply(user_message, chat_id, config):
+    """Routes every message down exactly one of three paths - the app is
+    restricted to document Q&A, so there is no general-knowledge fallback:
+
+      1. Small talk ("hi", "thanks", ...) -> build_chat_chain, a normal
+         friendly reply, regardless of whether a document is indexed.
+      2. No document indexed for this chat yet -> NO_DOCUMENT_MESSAGE,
+         returned directly without calling the LLM.
+      3. Otherwise -> build_rag_chain, grounded in this chat's indexed
+         documents. Its own hallucination guard returns NOT_FOUND_MESSAGE
+         when nothing relevant enough was retrieved (see rag_chain.py).
+    """
     pipeline = st.session_state.documents[chat_id]["pipeline"]
 
-    if pipeline:
+    if is_small_talk(user_message):
+        get_answer = build_chat_chain(config)
+        result = get_answer(user_message, chat_id)
+        bot_reply = result["answer"]
+        citations = result["citations"]
+    elif not pipeline:
+        bot_reply = NO_DOCUMENT_MESSAGE
+        citations = []
+    else:
         retrieved = pipeline.invoke(user_message)
         get_answer = build_rag_chain(retrieved, config)
-    else:
-        get_answer = build_chat_chain(config)
-
-    result = get_answer(user_message, chat_id)
-    bot_reply = result["answer"]
-    citations = result["citations"]
+        result = get_answer(user_message, chat_id)
+        bot_reply = result["answer"]
+        citations = result["citations"]
 
     if config["memory"]["enabled_default"]:
         record_turn(chat_id, user_message, bot_reply, config)
