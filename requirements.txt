@@ -1,3 +1,16 @@
+# PyTorch CPU-only wheel index. Without this, "pip install" resolves torch
+# (pulled in transitively by sentence-transformers below) from the default
+# PyPI index, which ships the full CUDA build - it drags in ~1.5-2 GB of
+# unused nvidia-cublas / nvidia-cudnn / nvidia-cufft / nvidia-cusolver /
+# triton CUDA runtime libraries that a CPU-only host like Render never
+# touches, but still loads into memory. That's what was pushing this service
+# over the free plan's 512 MB limit and triggering the memory-limit restarts
+# ("UI keeps loading" was the frontend stuck mid-restart, not a caching bug).
+# Making this index primary (not just an extra source) guarantees pip can
+# only resolve CPU-only wheels for torch, no matter which version it picks.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+
 # --- Core LangChain Packages ---
 langchain==0.3.25
 langchain-community==0.3.24
